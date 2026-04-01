@@ -1,10 +1,8 @@
 /**
- * Agent spawner — creates agents from AgentDefinitions and runs them.
+ * Agent spawner — creates and runs agents from AgentDefinitions.
  *
- * Every spawned agent gets:
- * 1. Its own Subconscious instance (context management)
- * 2. The tools defined in its AgentDefinition
- * 3. The agent loop (TAOR)
+ * Each agent gets its own Subconscious, tools, and TAOR loop.
+ * Used by the main entry point when delegating from Discord.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -23,7 +21,7 @@ const BUILT_IN_TOOLS: Record<string, ToolDef> = {
 };
 
 /**
- * Spawn and run an agent with a task.
+ * Spawn and run an agent with a task (standalone — no Discord).
  */
 export async function spawnAndRun(
   definition: AgentDefinition,
@@ -42,12 +40,10 @@ export async function spawnAndRun(
     },
   });
 
-  // Resolve tools
   const tools = definition.tools
     .map((name) => BUILT_IN_TOOLS[name])
     .filter((t): t is ToolDef => t !== undefined);
 
-  // Build prompt with rules
   let prompt = definition.systemPrompt;
   if (definition.rules.length > 0) {
     prompt += `\n\n## Rules\n${definition.rules.map((r) => `- ${r}`).join('\n')}`;
@@ -63,9 +59,9 @@ export async function spawnAndRun(
       systemPrompt: prompt,
       tools,
       subconscious: sub,
-      maxTurns: definition.maxTurns ?? 50,
+      maxTurns: definition.maxTurns,
       onText: (text) => console.log(`[${definition.name}] ${text}`),
-      onToolUse: (name, input) => console.log(`[${definition.name}] Tool: ${name}(${JSON.stringify(input).slice(0, 100)})`),
+      onToolUse: (name) => console.log(`  [${definition.name}/tool] ${name}`),
       onStatus: (status) => console.log(`  [${definition.name}] ${status}`),
     },
     task,

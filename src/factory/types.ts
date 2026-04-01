@@ -7,16 +7,24 @@ export interface AgentDefinition {
   name: string;
   /** What this agent does */
   description: string;
-  /** System prompt slug on Echostash (or inline prompt for local dev) */
+  /** System prompt (inline or Echostash slug) */
   systemPrompt: string;
+  /** Personality traits */
+  personality: string;
   /** LLM model to use */
   model: string;
   /** Tool names this agent has access to */
   tools: string[];
-  /** Custom rules/constraints for this agent */
+  /** Rules/constraints */
   rules: string[];
   /** Max turns before stopping */
-  maxTurns?: number;
+  maxTurns: number;
+  /** Discord thread ID where this agent operates */
+  threadId?: string;
+  /** Created by (user ID) */
+  createdBy: string;
+  /** Timestamp */
+  createdAt: number;
 }
 
 export interface ToolDefinition {
@@ -24,10 +32,14 @@ export interface ToolDefinition {
   name: string;
   /** What this tool does */
   description: string;
-  /** Zod schema as a JSON object (for serialization) */
+  /** Parameter schema as JSON Schema */
   parameters: Record<string, unknown>;
-  /** The implementation code (stored as string, executed in sandbox) */
+  /** Implementation code (TypeScript function body) */
   implementation: string;
+  /** Which agents have this tool assigned */
+  assignedTo: string[];
+  /** Who created it */
+  createdBy: string;
 }
 
 export interface SkillDefinition {
@@ -41,11 +53,24 @@ export interface SkillDefinition {
   tools: string[];
 }
 
+export interface ToolRequest {
+  /** Which agent is requesting */
+  agentName: string;
+  /** What the agent needs */
+  description: string;
+  /** Why it needs it */
+  reason: string;
+  /** Status */
+  status: 'pending' | 'approved' | 'declined';
+  /** HR's response */
+  response?: string;
+  /** Timestamp */
+  requestedAt: number;
+}
+
 export interface TaskforceState {
-  /** All registered agents */
   agents: Map<string, AgentDefinition>;
-  /** All registered custom tools */
   tools: Map<string, ToolDefinition>;
-  /** All registered skills */
   skills: Map<string, SkillDefinition>;
+  toolRequests: ToolRequest[];
 }
