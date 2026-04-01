@@ -9,7 +9,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { Subconscious, MemoryKVStore, MemoryVectorStore } from '@echostash/subconscious';
-import { OpenAIAdapter } from '@echostash/subconscious/llm/openai';
+import { GoogleAdapter } from '@echostash/subconscious/llm/google';
 import type { AgentDefinition } from './types.js';
 import type { ToolDef } from '../core/tool-types.js';
 import { runAgentLoop } from '../core/agent-loop.js';
@@ -30,7 +30,7 @@ export async function spawnAndRun(
   task: string,
 ): Promise<string> {
   const client = new Anthropic();
-  const subconsciousLLM = new OpenAIAdapter({ model: 'gpt-4o-mini' });
+  const subconsciousLLM = new GoogleAdapter();
 
   const sub = new Subconscious({
     vector: new MemoryVectorStore(),

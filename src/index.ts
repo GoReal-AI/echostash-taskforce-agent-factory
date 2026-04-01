@@ -17,7 +17,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { Subconscious, MemoryKVStore, MemoryVectorStore } from '@echostash/subconscious';
-import { OpenAIAdapter } from '@echostash/subconscious/llm/openai';
+import { GoogleAdapter } from '@echostash/subconscious/llm/google';
 import { Registry } from './factory/registry.js';
 import { createFactoryTools } from './factory/factory-tools.js';
 import { spawnAndRun } from './factory/agent-spawner.js';
@@ -58,7 +58,7 @@ Think: "Which agent should handle this? Do I need to create one?"`;
 
 async function main(): Promise<void> {
   const client = new Anthropic();
-  const subconsciousLLM = new OpenAIAdapter({ model: 'gpt-4o-mini' });
+  const subconsciousLLM = new GoogleAdapter();
 
   const sub = new Subconscious({
     vector: new MemoryVectorStore(),
