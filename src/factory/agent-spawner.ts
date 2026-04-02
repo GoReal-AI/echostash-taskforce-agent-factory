@@ -1,6 +1,9 @@
 /**
  * Agent spawner — creates and runs agents from AgentDefinitions.
- * All Gemini, no Anthropic.
+ *
+ * IMPORTANT: Each agent gets ONE Subconscious that persists across
+ * all delegations. The second time you delegate to the same agent,
+ * it remembers everything from the first time.
  */
 
 import { Subconscious, MemoryKVStore, MemoryVectorStore } from '@echostash/subconscious';
@@ -20,22 +23,39 @@ const BUILT_IN_TOOLS: Record<string, ToolDef> = {
 
 const GOOGLE_API_KEY = process.env.GOOGLE_AI_API_KEY ?? process.env.VERTEX_AI_API_KEY ?? '';
 
+/** Persistent Subconscious instances — one per agent, survives across spawns */
+const agentMemory = new Map<string, Subconscious>();
+
+function getOrCreateSubconscious(agentName: string): Subconscious {
+  let sub = agentMemory.get(agentName);
+  if (sub) {
+    events.log('subconscious', agentName, 'sub', 'Reconnected', 'Reusing existing memory from previous tasks');
+    return sub;
+  }
+
+  const subconsciousLLM = new GoogleAdapter({ apiKey: GOOGLE_API_KEY, model: 'gemini-3-flash-preview' });
+  sub = new Subconscious({
+    vector: new MemoryVectorStore(),
+    kv: new MemoryKVStore(),
+    llm: subconsciousLLM,
+    sessionId: `agent-${agentName}`,
+    tokenBudget: 8000,
+    onStatus: (event) => {
+      console.log(`  [${agentName}/sub] ${event.phase}: ${event.message}`);
+      events.log('subconscious', agentName, 'sub', event.phase, event.message);
+    },
+  });
+
+  agentMemory.set(agentName, sub);
+  events.log('subconscious', agentName, 'sub', 'Created', 'New Subconscious instance');
+  return sub;
+}
+
 export async function spawnAndRun(
   definition: AgentDefinition,
   task: string,
 ): Promise<string> {
-  const subconsciousLLM = new GoogleAdapter({ apiKey: GOOGLE_API_KEY, model: 'gemini-3-flash-preview' });
-
-  const sub = new Subconscious({
-    vector: new MemoryVectorStore(),
-    kv: new MemoryKVStore(),
-    llm: subconsciousLLM,
-    tokenBudget: 8000,
-    onStatus: (event) => {
-      console.log(`  [${definition.name}/sub] ${event.phase}: ${event.message}`);
-      events.log('subconscious', definition.name, 'sub', event.phase, event.message);
-    },
-  });
+  const sub = getOrCreateSubconscious(definition.name);
 
   const tools = definition.tools
     .map((name) => BUILT_IN_TOOLS[name])
