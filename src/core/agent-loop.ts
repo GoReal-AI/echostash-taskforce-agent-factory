@@ -9,6 +9,7 @@ import { GoogleGenerativeAI, type Part } from '@google/generative-ai';
 import type { Subconscious } from '@echostash/subconscious';
 import type { ToolDef } from './tool-types.js';
 import { events } from '../dashboard/events.js';
+import { costTracker } from '../dashboard/costs.js';
 
 export interface AgentLoopConfig {
   /** Agent name (for logging) */
@@ -70,7 +71,37 @@ export async function runAgentLoop(
   });
 
   onStatus?.(`Context: ${prepared.messages.length} msgs, ~${prepared.totalTokens} tokens [${prepared.classification}]`);
-  events.log('subconscious', name, 'sub', `Classify: ${prepared.classification}`, `${prepared.messages.length} msgs, ~${prepared.totalTokens} tokens`, { actions: prepared.actions });
+
+  // Log full context to dashboard — this is what the agent actually sees
+  const contextSnapshot = prepared.messages.map((m) => ({
+    role: m.role,
+    source: m.meta?.source ?? m.role,
+    turn: m.meta?.turn ?? '?',
+    tokens: m.meta?.tokens ?? '?',
+    priority: m.meta?.priority ?? '?',
+    relevancy: typeof m.meta?.relevancy === 'number' ? m.meta.relevancy.toFixed(2) : '?',
+    pinned: m.meta?.pinned ?? false,
+    recalled: m.meta?.recalled ?? false,
+    compressed: m.meta?.compressed ?? false,
+    content: m.content,
+  }));
+
+  events.log('subconscious', name, 'sub',
+    `Classify: ${prepared.classification}`,
+    `${prepared.messages.length} msgs, ~${prepared.totalTokens} tokens`,
+    {
+      actions: prepared.actions,
+      context: contextSnapshot,
+      summary: prepared.summary,
+      recalled: prepared.recalled,
+      compressed: prepared.compressed,
+    },
+  );
+
+  // Track cost: estimate raw history as accumulated total
+  // The Subconscious's own getContext() length is the running total
+  const rawEstimate = prepared.totalTokens + (prepared.compressed * 200); // rough: compressed msgs were ~200 tokens each
+  costTracker.trackPrepare(name, prepared.messages.length, rawEstimate, prepared.totalTokens);
 
   // Start chat with history from Subconscious
   const history = prepared.messages
