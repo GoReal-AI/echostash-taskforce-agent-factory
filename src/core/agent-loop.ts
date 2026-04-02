@@ -8,8 +8,11 @@
 import { GoogleGenerativeAI, type Part } from '@google/generative-ai';
 import type { Subconscious } from '@echostash/subconscious';
 import type { ToolDef } from './tool-types.js';
+import { events } from '../dashboard/events.js';
 
 export interface AgentLoopConfig {
+  /** Agent name (for logging) */
+  agentName?: string;
   /** Google AI API key */
   apiKey: string;
   /** Model to use (e.g. gemini-3.1-pro-preview) */
@@ -34,7 +37,9 @@ export async function runAgentLoop(
   config: AgentLoopConfig,
   initialTask: string,
 ): Promise<string> {
-  const { apiKey, model, systemPrompt, tools, subconscious, maxTurns, onText, onToolUse, onStatus } = config;
+  const { agentName: name = 'agent', apiKey, model, systemPrompt, tools, subconscious, maxTurns, onText, onToolUse, onStatus } = config;
+
+  events.log('system', name, 'status', 'Agent loop started', `Model: ${model}, Max turns: ${maxTurns}, Tools: ${tools.length}`);
 
   const genAI = new GoogleGenerativeAI(apiKey);
 
@@ -65,6 +70,7 @@ export async function runAgentLoop(
   });
 
   onStatus?.(`Context: ${prepared.messages.length} msgs, ~${prepared.totalTokens} tokens [${prepared.classification}]`);
+  events.log('subconscious', name, 'sub', `Classify: ${prepared.classification}`, `${prepared.messages.length} msgs, ~${prepared.totalTokens} tokens`, { actions: prepared.actions });
 
   // Start chat with history from Subconscious
   const history = prepared.messages
@@ -98,8 +104,8 @@ export async function runAgentLoop(
       if (part.text) {
         onText?.(part.text);
         finalOutput = part.text;
+        events.log('agent', name, 'action', 'Response', part.text.slice(0, 200));
 
-        // Ingest text response into Subconscious
         await subconscious.ingest({
           id: `resp-${Date.now()}`,
           role: 'assistant',
@@ -113,18 +119,21 @@ export async function runAgentLoop(
         const toolName = part.functionCall.name;
         const toolInput = (part.functionCall.args ?? {}) as Record<string, unknown>;
         onToolUse?.(toolName, toolInput);
+        events.log('tool', name, 'tool', `${toolName}()`, JSON.stringify(toolInput).slice(0, 200), { tool: toolName, input: toolInput });
 
-        // Execute tool
         const tool = toolMap.get(toolName);
         let toolResult: string;
         if (tool) {
           try {
             toolResult = await tool.execute(toolInput);
+            events.log('tool', name, 'info', `${toolName} result`, toolResult.slice(0, 300));
           } catch (error: any) {
             toolResult = `ERROR: ${error.message}`;
+            events.log('tool', name, 'error', `${toolName} failed`, error.message);
           }
         } else {
           toolResult = `ERROR: Unknown tool "${toolName}"`;
+          events.log('tool', name, 'error', `Unknown tool: ${toolName}`, '');
         }
 
         functionResponses.push({

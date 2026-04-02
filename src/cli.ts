@@ -15,6 +15,8 @@ import { readFileTool, writeFileTool } from './tools/files.js';
 import { runAgentLoop } from './core/agent-loop.js';
 import { spawnAndRun } from './factory/agent-spawner.js';
 import type { AgentDefinition } from './factory/types.js';
+import { events } from './dashboard/events.js';
+import { startDashboard } from './dashboard/server.js';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_AI_API_KEY ?? process.env.VERTEX_AI_API_KEY ?? '';
 
@@ -28,6 +30,9 @@ async function main(): Promise<void> {
   const registry = new Registry();
   const hrTools = createHRTools(registry);
 
+  // Start dashboard
+  startDashboard(3333);
+
   const hrSub = new Subconscious({
     vector: new MemoryVectorStore(),
     kv: new MemoryKVStore(),
@@ -35,6 +40,7 @@ async function main(): Promise<void> {
     tokenBudget: 12000,
     onStatus: (event) => {
       console.log(`  [hr/sub] ${event.phase}: ${event.message}`);
+      events.log('subconscious', 'hr', 'sub', event.phase, event.message);
     },
   });
 
@@ -82,6 +88,7 @@ async function main(): Promise<void> {
     }
 
     pendingDelegation = null;
+    events.log('system', 'user', 'info', 'User message', input);
 
     const systemPrompt = buildHRSystemPrompt(
       registry.listAgents(),
@@ -92,6 +99,7 @@ async function main(): Promise<void> {
     try {
       await runAgentLoop(
         {
+          agentName: 'hr',
           apiKey: GOOGLE_API_KEY,
           model: 'gemini-3.1-pro-preview',
           systemPrompt,

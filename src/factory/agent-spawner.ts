@@ -10,6 +10,7 @@ import type { ToolDef } from '../core/tool-types.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { bashTool } from '../tools/bash.js';
 import { readFileTool, writeFileTool } from '../tools/files.js';
+import { events } from '../dashboard/events.js';
 
 const BUILT_IN_TOOLS: Record<string, ToolDef> = {
   bash: bashTool,
@@ -32,6 +33,7 @@ export async function spawnAndRun(
     tokenBudget: 8000,
     onStatus: (event) => {
       console.log(`  [${definition.name}/sub] ${event.phase}: ${event.message}`);
+      events.log('subconscious', definition.name, 'sub', event.phase, event.message);
     },
   });
 
@@ -47,9 +49,11 @@ export async function spawnAndRun(
   console.log(`\n--- Spawning agent: ${definition.name} ---`);
   console.log(`Model: ${definition.model}`);
   console.log(`Task: ${task}\n`);
+  events.log('system', definition.name, 'status', 'Agent spawned', `Task: ${task.slice(0, 100)}`);
 
   const result = await runAgentLoop(
     {
+      agentName: definition.name,
       apiKey: GOOGLE_API_KEY,
       model: definition.model,
       systemPrompt: prompt,
