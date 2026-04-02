@@ -104,13 +104,31 @@ export async function runAgentLoop(
   costTracker.trackPrepare(name, prepared.messages.length, rawEstimate, prepared.totalTokens);
 
   // Start chat with history from Subconscious
-  const history = prepared.messages
+  // Gemini requires: first content must be 'user', and user/model must alternate
+  const nonSystem = prepared.messages
     .filter((m) => m.role !== 'system')
     .slice(0, -1) // exclude the last message (we'll send it as the first turn)
     .map((m) => ({
       role: m.role === 'assistant' ? 'model' as const : 'user' as const,
       parts: [{ text: m.content }] as Part[],
     }));
+
+  // Ensure first message is 'user' (Gemini requirement)
+  while (nonSystem.length > 0 && nonSystem[0]!.role !== 'user') {
+    nonSystem.shift();
+  }
+
+  // Merge consecutive same-role messages (Gemini requires alternation)
+  const history: typeof nonSystem = [];
+  for (const msg of nonSystem) {
+    const last = history[history.length - 1];
+    if (last && last.role === msg.role) {
+      // Merge into previous
+      last.parts.push(...msg.parts);
+    } else {
+      history.push(msg);
+    }
+  }
 
   const chat = geminiModel.startChat({ history });
 
