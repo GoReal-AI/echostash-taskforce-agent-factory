@@ -1,11 +1,8 @@
 /**
  * Agent spawner — creates and runs agents from AgentDefinitions.
- *
- * Each agent gets its own Subconscious, tools, and TAOR loop.
- * Used by the main entry point when delegating from Discord.
+ * All Gemini, no Anthropic.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { Subconscious, MemoryKVStore, MemoryVectorStore } from '@echostash/subconscious';
 import { GoogleAdapter } from '@echostash/subconscious/llm/google';
 import type { AgentDefinition } from './types.js';
@@ -20,15 +17,13 @@ const BUILT_IN_TOOLS: Record<string, ToolDef> = {
   write_file: writeFileTool,
 };
 
-/**
- * Spawn and run an agent with a task (standalone — no Discord).
- */
+const GOOGLE_API_KEY = process.env.GOOGLE_AI_API_KEY ?? process.env.VERTEX_AI_API_KEY ?? '';
+
 export async function spawnAndRun(
   definition: AgentDefinition,
   task: string,
 ): Promise<string> {
-  const client = new Anthropic();
-  const subconsciousLLM = new GoogleAdapter();
+  const subconsciousLLM = new GoogleAdapter({ apiKey: GOOGLE_API_KEY, model: 'gemini-3-flash-preview' });
 
   const sub = new Subconscious({
     vector: new MemoryVectorStore(),
@@ -50,11 +45,12 @@ export async function spawnAndRun(
   }
 
   console.log(`\n--- Spawning agent: ${definition.name} ---`);
+  console.log(`Model: ${definition.model}`);
   console.log(`Task: ${task}\n`);
 
   const result = await runAgentLoop(
     {
-      client,
+      apiKey: GOOGLE_API_KEY,
       model: definition.model,
       systemPrompt: prompt,
       tools,

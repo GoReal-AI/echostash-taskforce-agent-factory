@@ -1,13 +1,10 @@
 /**
  * CLI mode — talk to HR directly in the terminal.
  *
- * Same HR agent, same tools, same Subconscious. No Discord needed.
- *
  * Usage:
- *   ANTHROPIC_API_KEY=... GOOGLE_AI_API_KEY=... npx tsx src/cli.ts
+ *   GOOGLE_AI_API_KEY=... npx tsx src/cli.ts
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { Subconscious, MemoryKVStore, MemoryVectorStore } from '@echostash/subconscious';
 import { GoogleAdapter } from '@echostash/subconscious/llm/google';
 import { Registry } from './factory/registry.js';
@@ -18,11 +15,15 @@ import { readFileTool, writeFileTool } from './tools/files.js';
 import { runAgentLoop } from './core/agent-loop.js';
 import { spawnAndRun } from './factory/agent-spawner.js';
 
+const GOOGLE_API_KEY = process.env.GOOGLE_AI_API_KEY ?? process.env.VERTEX_AI_API_KEY ?? '';
+
 async function main(): Promise<void> {
-  const client = new Anthropic();
-  const subconsciousLLM = new GoogleAdapter({
-    apiKey: process.env.GOOGLE_AI_API_KEY ?? process.env.VERTEX_AI_API_KEY,
-  });
+  if (!GOOGLE_API_KEY) {
+    console.error('Required: GOOGLE_AI_API_KEY or VERTEX_AI_API_KEY');
+    process.exit(1);
+  }
+
+  const subconsciousLLM = new GoogleAdapter({ apiKey: GOOGLE_API_KEY, model: 'gemini-3-flash-preview' });
   const registry = new Registry();
   const hrTools = createHRTools(registry);
 
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
   });
 
   console.log('=== HR — Taskforce Agent Factory (CLI) ===');
-  console.log('Create agents, build tools, delegate tasks.');
+  console.log('Models: Gemini 3.1 Pro (HR) | Gemini 3 Flash (Subconscious)');
   console.log('Type "quit" to exit.\n');
 
   const existing = registry.listAgents();
@@ -48,7 +49,6 @@ async function main(): Promise<void> {
   const readline = await import('readline');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  // Handle piped input (stdin closes after last line)
   let closed = false;
   rl.on('close', () => { closed = true; });
 
@@ -68,8 +68,8 @@ async function main(): Promise<void> {
     try {
       const result = await runAgentLoop(
         {
-          client,
-          model: 'claude-sonnet-4-5-20250929',
+          apiKey: GOOGLE_API_KEY,
+          model: 'gemini-3.1-pro-preview',
           systemPrompt,
           tools: [...hrTools, bashTool, readFileTool, writeFileTool],
           subconscious: hrSub,
@@ -105,7 +105,6 @@ async function main(): Promise<void> {
     });
   };
 
-  // Support piped input: read all lines, process sequentially
   if (!process.stdin.isTTY) {
     const lines: string[] = [];
     rl.on('line', (line) => lines.push(line));

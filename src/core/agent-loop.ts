@@ -1,26 +1,18 @@
 /**
  * Lightweight agent loop — Think, Act, Observe, Repeat.
  *
- * Inspired by the existing Taskforce TAOR loop (~50 lines of core logic).
- * Every agent runs this loop with the Subconscious managing context.
- *
- * Flow:
- *   1. Subconscious prepares context (classify, recall, reshape)
- *   2. LLM sees curated context + tools
- *   3. LLM responds with text and/or tool calls
- *   4. Execute tools, collect results
- *   5. Subconscious ingests response
- *   6. Repeat until done
+ * Powered by Google Gemini. Every agent runs this loop
+ * with the Subconscious managing context.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import type { Subconscious, EnrichedMessage } from '@echostash/subconscious';
+import { GoogleGenerativeAI, type Part } from '@google/generative-ai';
+import type { Subconscious } from '@echostash/subconscious';
 import type { ToolDef } from './tool-types.js';
 
 export interface AgentLoopConfig {
-  /** Anthropic client */
-  client: Anthropic;
-  /** Model to use */
+  /** Google AI API key */
+  apiKey: string;
+  /** Model to use (e.g. gemini-3.1-pro-preview) */
   model: string;
   /** System prompt */
   systemPrompt: string;
@@ -42,14 +34,24 @@ export async function runAgentLoop(
   config: AgentLoopConfig,
   initialTask: string,
 ): Promise<string> {
-  const { client, model, systemPrompt, tools, subconscious, maxTurns, onText, onToolUse, onStatus } = config;
+  const { apiKey, model, systemPrompt, tools, subconscious, maxTurns, onText, onToolUse, onStatus } = config;
 
-  // Convert tools to Anthropic format
-  const anthropicTools: Anthropic.Messages.Tool[] = tools.map((t) => ({
+  const genAI = new GoogleGenerativeAI(apiKey);
+
+  // Convert tools to Gemini function declarations
+  const functionDeclarations = tools.map((t) => ({
     name: t.name,
     description: t.description,
-    input_schema: t.inputSchema as Anthropic.Messages.Tool.InputSchema,
+    parameters: t.inputSchema,
   }));
+
+  const geminiModel = genAI.getGenerativeModel({
+    model,
+    systemInstruction: systemPrompt,
+    tools: functionDeclarations.length > 0
+      ? [{ functionDeclarations } as any]
+      : undefined,
+  });
 
   // Build tool executor map
   const toolMap = new Map(tools.map((t) => [t.name, t]));
@@ -64,109 +66,154 @@ export async function runAgentLoop(
 
   onStatus?.(`Context: ${prepared.messages.length} msgs, ~${prepared.totalTokens} tokens [${prepared.classification}]`);
 
-  // Convert enriched messages to Anthropic format
-  let messages: Anthropic.Messages.MessageParam[] = prepared.messages
+  // Start chat with history from Subconscious
+  const history = prepared.messages
     .filter((m) => m.role !== 'system')
+    .slice(0, -1) // exclude the last message (we'll send it as the first turn)
     .map((m) => ({
-      role: m.role === 'assistant' ? 'assistant' as const : 'user' as const,
-      content: m.content,
+      role: m.role === 'assistant' ? 'model' as const : 'user' as const,
+      parts: [{ text: m.content }] as Part[],
     }));
 
-  // Extract system content from enriched messages
-  const systemMessages = prepared.messages.filter((m) => m.role === 'system');
-  const fullSystem = [systemPrompt, ...systemMessages.map((m) => m.content)]
-    .filter(Boolean)
-    .join('\n\n');
+  const chat = geminiModel.startChat({ history });
 
   let turn = 0;
   let finalOutput = '';
+  let pendingMessage = initialTask;
 
   while (turn < maxTurns) {
     turn++;
     onStatus?.(`Turn ${turn}/${maxTurns}`);
 
-    // Call LLM
-    const response = await client.messages.create({
-      model,
-      max_tokens: 8192,
-      system: fullSystem,
-      tools: anthropicTools.length > 0 ? anthropicTools : undefined,
-      messages,
-    });
+    // Send message
+    const result = await chat.sendMessage(pendingMessage);
+    const response = result.response;
+    const parts = response.candidates?.[0]?.content?.parts ?? [];
 
-    // Process response blocks
-    const assistantContent: Anthropic.Messages.ContentBlockParam[] = [];
-    const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
-    let hasToolUse = false;
+    // Process response parts
+    let hasToolCall = false;
+    const functionResponses: Array<{ functionResponse: { name: string; response: { result: string } } }> = [];
 
-    for (const block of response.content) {
-      if (block.type === 'text') {
-        onText?.(block.text);
-        finalOutput = block.text;
-        assistantContent.push({ type: 'text', text: block.text });
-      } else if (block.type === 'tool_use') {
-        hasToolUse = true;
-        onToolUse?.(block.name, block.input as Record<string, unknown>);
-        assistantContent.push({
-          type: 'tool_use',
-          id: block.id,
-          name: block.name,
-          input: block.input as Record<string, unknown>,
+    for (const part of parts) {
+      if (part.text) {
+        onText?.(part.text);
+        finalOutput = part.text;
+
+        // Ingest text response into Subconscious
+        await subconscious.ingest({
+          id: `resp-${Date.now()}`,
+          role: 'assistant',
+          content: part.text,
+          timestamp: Date.now(),
         });
+      }
+
+      if (part.functionCall) {
+        hasToolCall = true;
+        const toolName = part.functionCall.name;
+        const toolInput = (part.functionCall.args ?? {}) as Record<string, unknown>;
+        onToolUse?.(toolName, toolInput);
 
         // Execute tool
-        const tool = toolMap.get(block.name);
-        let result: string;
+        const tool = toolMap.get(toolName);
+        let toolResult: string;
         if (tool) {
           try {
-            result = await tool.execute(block.input as Record<string, unknown>);
+            toolResult = await tool.execute(toolInput);
           } catch (error: any) {
-            result = `ERROR: ${error.message}`;
+            toolResult = `ERROR: ${error.message}`;
           }
         } else {
-          result = `ERROR: Unknown tool "${block.name}"`;
+          toolResult = `ERROR: Unknown tool "${toolName}"`;
         }
 
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: result,
+        functionResponses.push({
+          functionResponse: {
+            name: toolName,
+            response: { result: toolResult },
+          },
+        });
+
+        // Store tool result in Subconscious (background)
+        void subconscious.prepare({
+          id: `tool-${Date.now()}`,
+          role: 'tool',
+          content: `[${toolName}] ${toolResult.slice(0, 2000)}`,
+          timestamp: Date.now(),
+          source: 'tool',
         });
       }
     }
 
-    // Add assistant message
-    messages.push({ role: 'assistant', content: assistantContent });
+    // If no tool calls, we're done
+    if (!hasToolCall) break;
 
-    // Ingest assistant response into Subconscious
-    await subconscious.ingest({
-      id: `resp-${Date.now()}`,
-      role: 'assistant',
-      content: finalOutput,
-      timestamp: Date.now(),
-    });
+    // Send tool results back — Gemini expects functionResponse parts
+    const toolResultMsg = await chat.sendMessage(functionResponses as any);
+    const toolParts = toolResultMsg.response.candidates?.[0]?.content?.parts ?? [];
 
-    // If no tool use, we're done
-    if (!hasToolUse || response.stop_reason === 'end_turn') {
-      break;
+    // Process follow-up (might be text or more tool calls)
+    let moreTools = false;
+    const moreFunctionResponses: typeof functionResponses = [];
+
+    for (const part of toolParts) {
+      if (part.text) {
+        onText?.(part.text);
+        finalOutput = part.text;
+        await subconscious.ingest({
+          id: `resp-${Date.now()}`,
+          role: 'assistant',
+          content: part.text,
+          timestamp: Date.now(),
+        });
+      }
+      if (part.functionCall) {
+        moreTools = true;
+        const toolName = part.functionCall.name;
+        const toolInput = (part.functionCall.args ?? {}) as Record<string, unknown>;
+        onToolUse?.(toolName, toolInput);
+
+        const tool = toolMap.get(toolName);
+        let toolResult: string;
+        if (tool) {
+          try { toolResult = await tool.execute(toolInput); }
+          catch (error: any) { toolResult = `ERROR: ${error.message}`; }
+        } else {
+          toolResult = `ERROR: Unknown tool "${toolName}"`;
+        }
+
+        moreFunctionResponses.push({
+          functionResponse: { name: toolName, response: { result: toolResult } },
+        });
+      }
     }
 
-    // Add tool results as user message
-    messages.push({ role: 'user', content: toolResults });
-
-    // Prepare tool results through Subconscious
-    for (const tr of toolResults) {
-      const content = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content);
-      await subconscious.prepare({
-        id: `tool-${Date.now()}`,
-        role: 'tool',
-        content: content.slice(0, 2000), // Don't embed huge tool outputs
-        timestamp: Date.now(),
-        source: 'tool',
-      });
+    // If there were more tool calls, send those results as the next pendingMessage
+    if (moreTools && moreFunctionResponses.length > 0) {
+      const moreResult = await chat.sendMessage(moreFunctionResponses as any);
+      const moreParts = moreResult.response.candidates?.[0]?.content?.parts ?? [];
+      for (const part of moreParts) {
+        if (part.text) {
+          onText?.(part.text);
+          finalOutput = part.text;
+          await subconscious.ingest({
+            id: `resp-${Date.now()}`,
+            role: 'assistant',
+            content: part.text,
+            timestamp: Date.now(),
+          });
+        }
+      }
     }
 
     void subconscious.flush();
+
+    // Check if the model stopped generating (no more tool calls in last response)
+    const finishReason = response.candidates?.[0]?.finishReason;
+    if (finishReason === 'STOP' && !hasToolCall) break;
+
+    // If there were no more tool calls in the follow-up, we're done
+    if (!moreTools) break;
   }
 
   return finalOutput;
