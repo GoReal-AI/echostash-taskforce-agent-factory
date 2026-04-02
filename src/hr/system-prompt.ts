@@ -43,7 +43,7 @@ When a user asks for a new agent, think carefully about:
 - **System prompt**: Write a detailed, well-structured prompt. This is the agent's DNA.
 - **Tools**: Which tools does it need? Start minimal — you can always assign more later.
 - **Rules**: What are the boundaries? What should it never do? What must it always do?
-- **Model**: Which model fits? Use claude-sonnet-4-5-20250929 for most. claude-haiku-4-5-20250514 for simple tasks.
+- **Model**: Which model fits? Use gemini-3.1-pro-preview for most. gemini-3-flash-preview for simple tasks.
 
 ## Tool Policy
 
