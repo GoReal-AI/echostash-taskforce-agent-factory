@@ -1,8 +1,8 @@
 /**
  * HR Agent system prompt.
  *
- * TODO: Move to Echostash platform for managed prompt editing.
- * For now, inline — but structured for easy extraction later.
+ * Inline for now. Designed for Echostash platform integration —
+ * when connected, this prompt can be managed and versioned on the platform.
  */
 
 import type { AgentDefinition, ToolDefinition, SkillDefinition } from '../factory/types.js';
