@@ -19,6 +19,8 @@ import { events } from './dashboard/events.js';
 import { startDashboard } from './dashboard/server.js';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_AI_API_KEY ?? process.env.VERTEX_AI_API_KEY ?? '';
+const ECHOSTASH_API_KEY = process.env.ECHOSTASH_API_KEY ?? '';
+const ECHOSTASH_BASE_URL = process.env.ECHOSTASH_BASE_URL ?? 'https://api.echostash.app';
 
 async function main(): Promise<void> {
   if (!GOOGLE_API_KEY) {
@@ -38,6 +40,7 @@ async function main(): Promise<void> {
     kv: new MemoryKVStore(),
     llm: subconsciousLLM,
     tokenBudget: 12000,
+    echostash: ECHOSTASH_API_KEY ? { baseUrl: ECHOSTASH_BASE_URL, apiKey: ECHOSTASH_API_KEY } : undefined,
     onStatus: (event) => {
       console.log(`  [hr/sub] ${event.phase}: ${event.message}`);
       events.log('subconscious', 'hr', 'sub', event.phase, event.message);
@@ -90,7 +93,7 @@ async function main(): Promise<void> {
     pendingDelegation = null;
     events.log('system', 'user', 'info', 'User message', input);
 
-    const systemPrompt = buildHRSystemPrompt(
+    const systemPrompt = await buildHRSystemPrompt(
       registry.listAgents(),
       registry.listTools(),
       registry.listSkills(),

@@ -22,6 +22,8 @@ const BUILT_IN_TOOLS: Record<string, ToolDef> = {
 };
 
 const GOOGLE_API_KEY = process.env.GOOGLE_AI_API_KEY ?? process.env.VERTEX_AI_API_KEY ?? '';
+const ECHOSTASH_API_KEY = process.env.ECHOSTASH_API_KEY ?? '';
+const ECHOSTASH_BASE_URL = process.env.ECHOSTASH_BASE_URL ?? 'https://api.echostash.app';
 
 /** Persistent Subconscious instances — one per agent, survives across spawns */
 const agentMemory = new Map<string, Subconscious>();
@@ -40,6 +42,7 @@ function getOrCreateSubconscious(agentName: string): Subconscious {
     llm: subconsciousLLM,
     sessionId: `agent-${agentName}`,
     tokenBudget: 8000,
+    echostash: ECHOSTASH_API_KEY ? { baseUrl: ECHOSTASH_BASE_URL, apiKey: ECHOSTASH_API_KEY } : undefined,
     onStatus: (event) => {
       console.log(`  [${agentName}/sub] ${event.phase}: ${event.message}`);
       events.log('subconscious', agentName, 'sub', event.phase, event.message);

@@ -1,30 +1,23 @@
 /**
  * HR Agent system prompt.
  *
- * Inline for now. Designed for Echostash platform integration —
- * when connected, this prompt can be managed and versioned on the platform.
+ * Fetches from Echostash and renders with Echo PDK.
+ * Falls back to hardcoded default if Echostash is not configured.
  */
 
+import { Echostash } from 'echostash';
+import { createEcho } from '@goreal-ai/echo-pdk';
 import type { AgentDefinition, ToolDefinition, SkillDefinition } from '../factory/types.js';
 
-export function buildHRSystemPrompt(
-  agents: AgentDefinition[],
-  tools: ToolDefinition[],
-  skills: SkillDefinition[],
-): string {
-  const agentList = agents.length > 0
-    ? agents.map((a) => `  - **${a.name}**: ${a.description} | Tools: ${a.tools.join(', ')} | Model: ${a.model}`).join('\n')
-    : '  (none yet)';
+const ECHOSTASH_API_KEY = process.env.ECHOSTASH_API_KEY ?? '';
+const ECHOSTASH_BASE_URL = process.env.ECHOSTASH_BASE_URL ?? 'https://api.echostash.app';
+const HR_PROMPT_ID = process.env.HR_PROMPT_ID ?? 'tf-hr-system';
 
-  const toolList = tools.length > 0
-    ? tools.map((t) => `  - **${t.name}**: ${t.description}`).join('\n')
-    : '  (bash, read_file, write_file — built-in only)';
+const echo = createEcho();
+let cachedTemplate: string | null = null;
 
-  const skillList = skills.length > 0
-    ? skills.map((s) => `  - **${s.name}**: ${s.description}`).join('\n')
-    : '  (none yet)';
-
-  return `You are **HR** — the Taskforce Agent Factory. You are the one and only authority that creates, manages, and governs AI agents in this workspace.
+const DEFAULT_TEMPLATE = `[#ROLE system]
+You are **HR** — the Taskforce Agent Factory. You are the one and only authority that creates, manages, and governs AI agents in this workspace.
 
 ## Your Responsibilities
 
@@ -33,14 +26,14 @@ export function buildHRSystemPrompt(
 3. **Assign tools** — When an agent needs a capability, they request it. You decide: assign an existing tool, build a new one, or decline with a reason.
 4. **Define rules** — You set the boundaries. What agents can and cannot do. Their scope, permissions, constraints.
 5. **Delegate tasks** — Route work to the right agent. If no agent fits, create one.
-6. **Manage the team** — You know every agent, their strengths, their tools, their rules. You're the organizational brain.
+6. **Manage the team** — You know every agent, their strengths, their tools, their rules. You are the organizational brain.
 
 ## How to Create an Agent
 
 When a user asks for a new agent, think carefully about:
 - **Personality**: What kind of agent is this? Formal? Casual? Technical? Creative?
 - **Role**: What is its specific job? Be precise.
-- **System prompt**: Write a detailed, well-structured prompt. This is the agent's DNA.
+- **System prompt**: Write a detailed, well-structured prompt. This is the agent DNA.
 - **Tools**: Which tools does it need? Start minimal — you can always assign more later.
 - **Rules**: What are the boundaries? What should it never do? What must it always do?
 - **Model**: Which model fits? Use gemini-3.1-pro-preview for most. gemini-3-flash-preview for simple tasks.
@@ -57,17 +50,29 @@ When a user asks for a new agent, think carefully about:
 ## Current Taskforce
 
 ### Agents
-${agentList}
+[#IF {{agentList}} #exists]
+{{agentList}}
+[ELSE]
+(none yet)
+[END IF]
 
 ### Custom Tools
-${toolList}
+[#IF {{toolList}} #exists]
+{{toolList}}
+[ELSE]
+(bash, read_file, write_file — built-in only)
+[END IF]
 
 ### Skills
-${skillList}
+[#IF {{skillList}} #exists]
+{{skillList}}
+[ELSE]
+(none yet)
+[END IF]
 
 ## Communication Style
 
-You are professional but personable. You're HR — approachable but authoritative.
+You are professional but personable. You are HR — approachable but authoritative.
 - Confirm agent creation with a summary of what you built
 - When declining a tool request, explain why
 - When users are vague, ask clarifying questions before creating anything
@@ -75,9 +80,61 @@ You are professional but personable. You're HR — approachable but authoritativ
 
 ## Important Rules
 
-- NEVER let agents modify their own tools or rules. That's YOUR job.
+- NEVER let agents modify their own tools or rules. That is YOUR job.
 - NEVER create an agent without a clear purpose. Ask the user if unclear.
 - When delegating a task, always verify the agent has the right tools first.
-- Keep agent scopes focused — one agent, one job. Don't create Swiss Army knife agents.
-- All prompts should be clear enough for a junior developer to understand what the agent does.`;
+- Keep agent scopes focused — one agent, one job. Do not create Swiss Army knife agents.
+- All prompts should be clear enough for a junior developer to understand what the agent does.
+[END ROLE]`;
+
+async function getTemplate(): Promise<string> {
+  if (cachedTemplate) return cachedTemplate;
+
+  if (ECHOSTASH_API_KEY) {
+    try {
+      const es = new Echostash(ECHOSTASH_BASE_URL, { apiKey: ECHOSTASH_API_KEY });
+      const prompt = await es.prompt(HR_PROMPT_ID).get();
+      cachedTemplate = prompt.text();
+      return cachedTemplate;
+    } catch {
+      // Fallback to default
+    }
+  }
+
+  cachedTemplate = DEFAULT_TEMPLATE;
+  return cachedTemplate;
+}
+
+export async function buildHRSystemPrompt(
+  agents: AgentDefinition[],
+  tools: ToolDefinition[],
+  skills: SkillDefinition[],
+): Promise<string> {
+  const agentList = agents.length > 0
+    ? agents.map((a) => `  - **${a.name}**: ${a.description} | Tools: ${a.tools.join(', ')} | Model: ${a.model}`).join('\n')
+    : '';
+
+  const toolList = tools.length > 0
+    ? tools.map((t) => `  - **${t.name}**: ${t.description}`).join('\n')
+    : '';
+
+  const skillList = skills.length > 0
+    ? skills.map((s) => `  - **${s.name}**: ${s.description}`).join('\n')
+    : '';
+
+  const template = await getTemplate();
+  const result = await echo.renderMessages(template, { agentList, toolList, skillList });
+
+  const msg = result.messages[0];
+  if (!msg) return template;
+  const content = msg.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b.type === 'text')
+      .map((b) => 'text' in b ? b.text : '')
+      .join('\n')
+      .trim();
+  }
+  return template;
 }
