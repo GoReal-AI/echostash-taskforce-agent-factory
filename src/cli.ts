@@ -32,8 +32,8 @@ async function main(): Promise<void> {
   const registry = new Registry();
   const hrTools = createHRTools(registry);
 
-  // Start dashboard
-  startDashboard(3333);
+  // Start dashboard with registry for state API
+  startDashboard(3333, registry);
 
   const hrSub = new Subconscious({
     vector: new MemoryVectorStore(),
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   });
 
   // Track pending delegations — intercepted from tool results
-  let pendingDelegation: { agent: string; task: string; definition: AgentDefinition } | null = null;
+  let pendingDelegation: { agent: string; task: string; definition: AgentDefinition; missionId?: string; taskId?: string } | null = null;
 
   // Wrap delegate_task to capture the delegation before it goes back to Gemini
   const wrappedHRTools = hrTools.map((tool) => {
@@ -93,11 +93,7 @@ async function main(): Promise<void> {
     pendingDelegation = null;
     events.log('system', 'user', 'info', 'User message', input);
 
-    const systemPrompt = await buildHRSystemPrompt(
-      registry.listAgents(),
-      registry.listTools(),
-      registry.listSkills(),
-    );
+    const systemPrompt = await buildHRSystemPrompt(registry);
 
     try {
       await runAgentLoop(
@@ -109,6 +105,7 @@ async function main(): Promise<void> {
           tools: [...wrappedHRTools, bashTool, readFileTool, writeFileTool],
           subconscious: hrSub,
           maxTurns: 15,
+          registry,
           onText: (text) => console.log(`\nHR: ${text}`),
           onToolUse: (name, toolInput) =>
             console.log(`  [tool] ${name}(${JSON.stringify(toolInput).slice(0, 120)})`),
@@ -119,15 +116,23 @@ async function main(): Promise<void> {
 
       // After HR finishes, check if a delegation was intercepted
       if (pendingDelegation) {
-        const { agent, task, definition } = pendingDelegation;
+        const { agent, task, definition, missionId, taskId } = pendingDelegation;
         console.log(`\n${'='.repeat(60)}`);
         console.log(`  Spawning agent: ${agent}`);
         console.log(`  Task: ${task}`);
         console.log(`${'='.repeat(60)}\n`);
-        await spawnAndRun(definition, task);
+        const result = await spawnAndRun(definition, task, registry);
         console.log(`\n${'='.repeat(60)}`);
         console.log(`  Agent ${agent} finished.`);
         console.log(`${'='.repeat(60)}`);
+
+        // Auto-mark mission task as done if linked
+        if (missionId && taskId) {
+          registry.updateTask(missionId, taskId, {
+            status: 'done',
+            result: result.slice(0, 500),
+          });
+        }
         pendingDelegation = null;
       }
     } catch (error: any) {

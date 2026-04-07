@@ -7,7 +7,8 @@
 
 import { Echostash } from 'echostash';
 import { createEcho } from '@goreal-ai/echo-pdk';
-import type { AgentDefinition, ToolDefinition, SkillDefinition } from '../factory/types.js';
+import type { Registry } from '../factory/registry.js';
+import { buildTeamAwarenessBlock } from '../factory/team-context.js';
 
 const ECHOSTASH_API_KEY = process.env.ECHOSTASH_API_KEY ?? '';
 const ECHOSTASH_BASE_URL = process.env.ECHOSTASH_BASE_URL ?? 'https://api.echostash.app';
@@ -27,6 +28,7 @@ You are **HR** — the Taskforce Agent Factory. You are the one and only authori
 4. **Define rules** — You set the boundaries. What agents can and cannot do. Their scope, permissions, constraints.
 5. **Delegate tasks** — Route work to the right agent. If no agent fits, create one.
 6. **Manage the team** — You know every agent, their strengths, their tools, their rules. You are the organizational brain.
+7. **Manage missions** — Create missions, break them into tasks, assign to agents, track progress. Use the mission board tools.
 
 ## How to Create an Agent
 
@@ -70,6 +72,13 @@ When a user asks for a new agent, think carefully about:
 (none yet)
 [END IF]
 
+## Mission Board
+[#IF {{teamContext}} #exists]
+{{teamContext}}
+[ELSE]
+No active missions. Use create_mission to start one, then add_task to add tasks.
+[END IF]
+
 ## Communication Style
 
 You are professional but personable. You are HR — approachable but authoritative.
@@ -85,6 +94,7 @@ You are professional but personable. You are HR — approachable but authoritati
 - When delegating a task, always verify the agent has the right tools first.
 - Keep agent scopes focused — one agent, one job. Do not create Swiss Army knife agents.
 - All prompts should be clear enough for a junior developer to understand what the agent does.
+- When delegating a mission task, use the missionId and taskId parameters to link the delegation to the board.
 [END ROLE]`;
 
 async function getTemplate(): Promise<string> {
@@ -105,11 +115,11 @@ async function getTemplate(): Promise<string> {
   return cachedTemplate;
 }
 
-export async function buildHRSystemPrompt(
-  agents: AgentDefinition[],
-  tools: ToolDefinition[],
-  skills: SkillDefinition[],
-): Promise<string> {
+export async function buildHRSystemPrompt(registry: Registry): Promise<string> {
+  const agents = registry.listAgents();
+  const tools = registry.listTools();
+  const skills = registry.listSkills();
+
   const agentList = agents.length > 0
     ? agents.map((a) => `  - **${a.name}**: ${a.description} | Tools: ${a.tools.join(', ')} | Model: ${a.model}`).join('\n')
     : '';
@@ -122,8 +132,10 @@ export async function buildHRSystemPrompt(
     ? skills.map((s) => `  - **${s.name}**: ${s.description}`).join('\n')
     : '';
 
+  const teamContext = buildTeamAwarenessBlock(registry);
+
   const template = await getTemplate();
-  const result = await echo.renderMessages(template, { agentList, toolList, skillList });
+  const result = await echo.renderMessages(template, { agentList, toolList, skillList, teamContext });
 
   const msg = result.messages[0];
   if (!msg) return template;

@@ -49,11 +49,7 @@ async function main(): Promise<void> {
     console.log(`[${ctx.username}] ${content}`);
     await ctx.typing();
 
-    const systemPrompt = await buildHRSystemPrompt(
-      registry.listAgents(),
-      registry.listTools(),
-      registry.listSkills(),
-    );
+    const systemPrompt = await buildHRSystemPrompt(registry);
 
     try {
       const result = await runAgentLoop(

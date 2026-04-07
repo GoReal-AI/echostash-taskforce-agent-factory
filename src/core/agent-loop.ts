@@ -8,6 +8,8 @@
 import { GoogleGenerativeAI, type Part } from '@google/generative-ai';
 import type { Subconscious } from '@echostash/subconscious';
 import type { ToolDef } from './tool-types.js';
+import type { Registry } from '../factory/registry.js';
+import { checkGuards, auditToolExecution } from './rule-engine.js';
 import { events } from '../dashboard/events.js';
 import { costTracker } from '../dashboard/costs.js';
 
@@ -32,13 +34,53 @@ export interface AgentLoopConfig {
   onToolUse?: (name: string, input: Record<string, unknown>) => void;
   /** Callback for status */
   onStatus?: (status: string) => void;
+  /** Registry for rule guards and audit (optional — no enforcement without it) */
+  registry?: Registry;
 }
 
 export async function runAgentLoop(
   config: AgentLoopConfig,
   initialTask: string,
 ): Promise<string> {
-  const { agentName: name = 'agent', apiKey, model, systemPrompt, tools, subconscious, maxTurns, onText, onToolUse, onStatus } = config;
+  const { agentName: name = 'agent', apiKey, model, systemPrompt, tools, subconscious, maxTurns, onText, onToolUse, onStatus, registry } = config;
+
+  // Helper: execute tool with guard checks and audit
+  async function executeTool(toolName: string, toolInput: Record<string, unknown>, tool: ToolDef | undefined): Promise<string> {
+    // Pre-execution: check rule guards
+    if (registry) {
+      const guardResult = checkGuards(registry, name, toolName, toolInput);
+      if (!guardResult.allowed) {
+        const msg = `BLOCKED by rule guard: ${guardResult.message}`;
+        auditToolExecution(registry, name, toolName, toolInput, msg, guardResult.message ?? null);
+        events.log('tool', name, 'error', `${toolName} BLOCKED`, guardResult.message ?? '');
+        return msg;
+      }
+    }
+
+    let result: string;
+    if (tool) {
+      try {
+        result = await tool.execute(toolInput);
+      } catch (error: any) {
+        result = `ERROR: ${error.message}`;
+      }
+    } else {
+      result = `ERROR: Unknown tool "${toolName}"`;
+    }
+
+    // Post-execution: audit
+    if (registry) {
+      auditToolExecution(registry, name, toolName, toolInput, result);
+    }
+
+    // Track budget
+    if (registry) {
+      const tokenEstimate = Math.ceil(result.length / 4);
+      registry.recordTokenUsage(name, tokenEstimate);
+    }
+
+    return result;
+  }
 
   events.log('system', name, 'status', 'Agent loop started', `Model: ${model}, Max turns: ${maxTurns}, Tools: ${tools.length}`);
 
@@ -171,19 +213,8 @@ export async function runAgentLoop(
         events.log('tool', name, 'tool', `${toolName}()`, JSON.stringify(toolInput).slice(0, 200), { tool: toolName, input: toolInput });
 
         const tool = toolMap.get(toolName);
-        let toolResult: string;
-        if (tool) {
-          try {
-            toolResult = await tool.execute(toolInput);
-            events.log('tool', name, 'info', `${toolName} result`, toolResult.slice(0, 300));
-          } catch (error: any) {
-            toolResult = `ERROR: ${error.message}`;
-            events.log('tool', name, 'error', `${toolName} failed`, error.message);
-          }
-        } else {
-          toolResult = `ERROR: Unknown tool "${toolName}"`;
-          events.log('tool', name, 'error', `Unknown tool: ${toolName}`, '');
-        }
+        const toolResult = await executeTool(toolName, toolInput, tool);
+        events.log('tool', name, 'info', `${toolName} result`, toolResult.slice(0, 300));
 
         functionResponses.push({
           functionResponse: {
@@ -232,13 +263,7 @@ export async function runAgentLoop(
         onToolUse?.(toolName, toolInput);
 
         const tool = toolMap.get(toolName);
-        let toolResult: string;
-        if (tool) {
-          try { toolResult = await tool.execute(toolInput); }
-          catch (error: any) { toolResult = `ERROR: ${error.message}`; }
-        } else {
-          toolResult = `ERROR: Unknown tool "${toolName}"`;
-        }
+        const toolResult = await executeTool(toolName, toolInput, tool);
 
         moreFunctionResponses.push({
           functionResponse: { name: toolName, response: { result: toolResult } },

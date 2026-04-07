@@ -9,10 +9,13 @@
 import { Subconscious, MemoryKVStore, MemoryVectorStore } from '@echostash/subconscious';
 import { GoogleAdapter } from '@echostash/subconscious/llm/google';
 import type { AgentDefinition } from './types.js';
+import type { Registry } from './registry.js';
 import type { ToolDef } from '../core/tool-types.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { bashTool } from '../tools/bash.js';
 import { readFileTool, writeFileTool } from '../tools/files.js';
+import { createTeamTool } from '../tools/team.js';
+import { buildTeamAwarenessBlock } from './team-context.js';
 import { events } from '../dashboard/events.js';
 
 const BUILT_IN_TOOLS: Record<string, ToolDef> = {
@@ -57,16 +60,27 @@ function getOrCreateSubconscious(agentName: string): Subconscious {
 export async function spawnAndRun(
   definition: AgentDefinition,
   task: string,
+  registry: Registry,
 ): Promise<string> {
   const sub = getOrCreateSubconscious(definition.name);
 
-  const tools = definition.tools
-    .map((name) => BUILT_IN_TOOLS[name])
-    .filter((t): t is ToolDef => t !== undefined);
+  // Built-in tools + team tool (every agent can read the mission board)
+  const teamTool = createTeamTool(registry);
+  const tools = [
+    teamTool,
+    ...definition.tools
+      .map((name) => BUILT_IN_TOOLS[name])
+      .filter((t): t is ToolDef => t !== undefined),
+  ];
 
+  // Build prompt: system prompt + rules + team awareness
   let prompt = definition.systemPrompt;
   if (definition.rules.length > 0) {
     prompt += `\n\n## Rules\n${definition.rules.map((r) => `- ${r}`).join('\n')}`;
+  }
+  const teamContext = buildTeamAwarenessBlock(registry, definition.name);
+  if (teamContext) {
+    prompt += `\n\n${teamContext}`;
   }
 
   console.log(`\n--- Spawning agent: ${definition.name} ---`);
@@ -83,6 +97,7 @@ export async function spawnAndRun(
       tools,
       subconscious: sub,
       maxTurns: definition.maxTurns,
+      registry,
       onText: (text) => console.log(`[${definition.name}] ${text}`),
       onToolUse: (name) => console.log(`  [${definition.name}/tool] ${name}`),
       onStatus: (status) => console.log(`  [${definition.name}] ${status}`),
