@@ -95,6 +95,10 @@ You are professional but personable. You are HR — approachable but authoritati
 - Keep agent scopes focused — one agent, one job. Do not create Swiss Army knife agents.
 - All prompts should be clear enough for a junior developer to understand what the agent does.
 - When delegating a mission task, use the missionId and taskId parameters to link the delegation to the board.
+- For delayed or recurring tasks, use add_scheduled_task (NOT bash sleep). Examples: "in 2m", "every 30m", "daily at 09:00". The scheduler runs in the background.
+- You can send messages to agents via send_message. Check agent inboxes with view_agent_inbox.
+- Set token budgets with set_agent_budget. View budget status with view_budgets.
+- Add rule guards with add_rule_guard to enforce hard rules (block dangerous tool calls before they execute).
 [END ROLE]`;
 
 async function getTemplate(): Promise<string> {

@@ -1,6 +1,11 @@
 /**
  * CLI mode — talk to HR directly in the terminal.
  *
+ * The CLI is now an orchestrator:
+ *   - REPL handles user input → HR agent loop
+ *   - Background scheduler processes due tasks, inbox messages
+ *   - Agents are persistent (Subconscious survives across spawns)
+ *
  * Usage:
  *   GOOGLE_AI_API_KEY=... npx tsx src/cli.ts
  */
@@ -14,6 +19,7 @@ import { bashTool } from './tools/bash.js';
 import { readFileTool, writeFileTool } from './tools/files.js';
 import { runAgentLoop } from './core/agent-loop.js';
 import { spawnAndRun } from './factory/agent-spawner.js';
+import { Scheduler } from './core/scheduler.js';
 import type { AgentDefinition } from './factory/types.js';
 import { events } from './dashboard/events.js';
 import { startDashboard } from './dashboard/server.js';
@@ -47,6 +53,21 @@ async function main(): Promise<void> {
     },
   });
 
+  // ---------------------------------------------------------------
+  // Background Scheduler — processes due schedules, inbox, board
+  // ---------------------------------------------------------------
+
+  const scheduler = new Scheduler(registry, async (agentName, task) => {
+    const agent = registry.getAgent(agentName);
+    if (!agent) throw new Error(`Agent "${agentName}" not found`);
+    return spawnAndRun(agent, task, registry);
+  });
+  scheduler.start();
+
+  // ---------------------------------------------------------------
+  // HR REPL — user talks to HR
+  // ---------------------------------------------------------------
+
   // Track pending delegations — intercepted from tool results
   let pendingDelegation: { agent: string; task: string; definition: AgentDefinition; missionId?: string; taskId?: string } | null = null;
 
@@ -70,11 +91,16 @@ async function main(): Promise<void> {
 
   console.log('=== HR — Taskforce Agent Factory (CLI) ===');
   console.log('Models: Gemini 3.1 Pro (HR) | Gemini 3 Flash (Subconscious)');
+  console.log('Background scheduler: active (30s tick)');
   console.log('Type "quit" to exit.\n');
 
   const existing = registry.listAgents();
   if (existing.length > 0) {
     console.log(`Existing agents: ${existing.map((a) => a.name).join(', ')}\n`);
+  }
+  const existingMissions = registry.listMissions().filter((m) => m.status === 'active');
+  if (existingMissions.length > 0) {
+    console.log(`Active missions: ${existingMissions.map((m) => m.name).join(', ')}\n`);
   }
 
   const readline = await import('readline');
@@ -87,6 +113,7 @@ async function main(): Promise<void> {
     if (!input.trim()) return;
     if (input.trim() === 'quit') {
       console.log('Bye!');
+      scheduler.stop();
       process.exit(0);
     }
 
@@ -154,11 +181,19 @@ async function main(): Promise<void> {
     rl.on('close', async () => {
       const fullInput = lines.join('\n').trim();
       if (fullInput) await handleInput(fullInput);
+      scheduler.stop();
       process.exit(0);
     });
   } else {
     prompt();
   }
+
+  // Graceful shutdown
+  process.on('SIGINT', () => {
+    console.log('\nShutting down...');
+    scheduler.stop();
+    process.exit(0);
+  });
 }
 
 main().catch(console.error);

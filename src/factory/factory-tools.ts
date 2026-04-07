@@ -638,29 +638,30 @@ export function createHRTools(registry: Registry): ToolDef[] {
 
   const addScheduledTask: ToolDef = {
     name: 'add_scheduled_task',
-    description: 'Add a scheduled/recurring task for an agent (cron-like).',
+    description: 'Schedule a task for an agent. Supports one-shot ("in 2m", "in 1h"), recurring ("every 30m", "every 1h"), and daily ("daily at 09:00"). The scheduler runs in the background — no need for bash sleep.',
     inputSchema: {
       type: 'object',
       properties: {
         agentName: { type: 'string', description: 'Agent to assign' },
-        schedule: { type: 'string', description: 'Schedule: "every 30m", "every 1h", "daily at 09:00"' },
-        task: { type: 'string', description: 'What the agent should do on schedule' },
+        schedule: { type: 'string', description: 'When: "in 2m" (one-shot), "every 30m" (recurring), "daily at 09:00"' },
+        task: { type: 'string', description: 'What the agent should do' },
       },
       required: ['agentName', 'schedule', 'task'],
     },
     async execute(input) {
       const id = `sched-${Date.now()}`;
-      const intervalMs = parseScheduleToMs(input.schedule as string);
+      const delayMs = parseScheduleToMs(input.schedule as string);
       registry.addSchedule({
         id,
         agentName: input.agentName as string,
         schedule: input.schedule as string,
         task: input.task as string,
         lastRun: null,
-        nextRun: Date.now() + intervalMs,
+        nextRun: Date.now() + delayMs,
         enabled: true,
       });
-      return `Scheduled task ${id}: ${input.agentName} will "${input.task}" ${input.schedule}.`;
+      const when = new Date(Date.now() + delayMs).toLocaleTimeString();
+      return `Scheduled: ${input.agentName} will "${(input.task as string).slice(0, 100)}" — next run at ${when} (${input.schedule}).`;
     },
   };
 
@@ -706,15 +707,35 @@ export function createHRTools(registry: Registry): ToolDef[] {
   ];
 }
 
-/** Parse simple schedule strings to milliseconds. */
+/** Parse simple schedule strings to milliseconds delay. */
 function parseScheduleToMs(schedule: string): number {
-  const match = schedule.match(/every\s+(\d+)\s*(m|min|h|hr|hour|d|day)/i);
-  if (match) {
-    const val = parseInt(match[1]!);
-    const unit = match[2]!.toLowerCase();
+  // "in 2m", "in 1h", "once in 5m"
+  const onceMatch = schedule.match(/(?:once\s+)?in\s+(\d+)\s*(m|min|h|hr|hour|d|day|s|sec)/i);
+  if (onceMatch) {
+    const val = parseInt(onceMatch[1]!);
+    const unit = onceMatch[2]!.toLowerCase();
+    if (unit.startsWith('s')) return val * 1_000;
     if (unit.startsWith('m')) return val * 60_000;
     if (unit.startsWith('h')) return val * 3_600_000;
     if (unit.startsWith('d')) return val * 86_400_000;
+  }
+  // "every 30m", "every 1h"
+  const everyMatch = schedule.match(/every\s+(\d+)\s*(m|min|h|hr|hour|d|day)/i);
+  if (everyMatch) {
+    const val = parseInt(everyMatch[1]!);
+    const unit = everyMatch[2]!.toLowerCase();
+    if (unit.startsWith('m')) return val * 60_000;
+    if (unit.startsWith('h')) return val * 3_600_000;
+    if (unit.startsWith('d')) return val * 86_400_000;
+  }
+  // "daily at HH:MM" — compute ms until next occurrence
+  const dailyMatch = schedule.match(/daily\s+at\s+(\d{1,2}):(\d{2})/i);
+  if (dailyMatch) {
+    const now = new Date();
+    const target = new Date();
+    target.setHours(parseInt(dailyMatch[1]!), parseInt(dailyMatch[2]!), 0, 0);
+    if (target <= now) target.setDate(target.getDate() + 1);
+    return target.getTime() - now.getTime();
   }
   // Default: 1 hour
   return 3_600_000;
