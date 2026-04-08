@@ -14,7 +14,7 @@ import type { ToolDef } from '../core/tool-types.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { bashTool } from '../tools/bash.js';
 import { readFileTool, writeFileTool } from '../tools/files.js';
-import { createTeamTool } from '../tools/team.js';
+import { createTeamTools } from '../tools/team.js';
 import { buildTeamAwarenessBlock } from './team-context.js';
 import { events } from '../dashboard/events.js';
 
@@ -64,10 +64,14 @@ export async function spawnAndRun(
 ): Promise<string> {
   const sub = getOrCreateSubconscious(definition.name);
 
-  // Built-in tools + team tool (every agent can read the mission board)
-  const teamTool = createTeamTool(registry);
+  // Built-in tools + team tools (mission board + agent-to-agent delegation)
+  const teamTools = createTeamTools(registry, definition.name, (agentName, task) => {
+    const targetDef = registry.getAgent(agentName);
+    if (!targetDef) throw new Error(`Agent "${agentName}" not found`);
+    return spawnAndRun(targetDef, task, registry);
+  });
   const tools = [
-    teamTool,
+    ...teamTools,
     ...definition.tools
       .map((name) => BUILT_IN_TOOLS[name])
       .filter((t): t is ToolDef => t !== undefined),

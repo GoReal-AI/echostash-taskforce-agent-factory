@@ -1,16 +1,31 @@
 /**
- * Team tool — available to all agents for reading mission board details.
+ * Team tools — available to agents for coordination.
  *
- * Read-only. Agents can see task details on demand but cannot modify the board.
+ * - get_task_details: read-only deep dive into mission tasks
+ * - request_agent: synchronous agent-to-agent delegation (requires canDelegate permission)
  */
 
 import type { ToolDef } from '../core/tool-types.js';
 import type { Registry } from '../factory/registry.js';
+import { events } from '../dashboard/events.js';
 
-export function createTeamTool(registry: Registry): ToolDef {
-  return {
+type AgentExecutor = (agentName: string, task: string) => Promise<string>;
+
+/**
+ * Create team tools for a specific agent.
+ * The executor is used for agent-to-agent delegation (request_agent).
+ */
+export function createTeamTools(
+  registry: Registry,
+  callerAgent: string,
+  executor: AgentExecutor,
+): ToolDef[] {
+  const tools: ToolDef[] = [];
+
+  // --- get_task_details: available to all agents ---
+  tools.push({
     name: 'get_task_details',
-    description: 'Get full details of a task from the mission board. Use when you need more context about a task beyond the status summary in your system message.',
+    description: 'Get full details of a task from the mission board. Use when you need more context about a task beyond the status summary.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -41,11 +56,7 @@ export function createTeamTool(registry: Registry): ToolDef {
 
         return JSON.stringify({
           mission: { id: mission.id, name: mission.name, goal: mission.goal, status: mission.status, deadline: mission.deadline },
-          task: {
-            ...task,
-            ageMinutes: age,
-            timeInProgressMinutes: timeInProgress,
-          },
+          task: { ...task, ageMinutes: age, timeInProgressMinutes: timeInProgress },
           dependencies,
           dependents,
         }, null, 2);
@@ -53,5 +64,60 @@ export function createTeamTool(registry: Registry): ToolDef {
 
       return `Task "${taskId}" not found on any mission board.`;
     },
-  };
+  });
+
+  // --- request_agent: synchronous agent-to-agent delegation ---
+  // Only available if the caller has canDelegate permission
+  const perms = registry.getPermissions(callerAgent);
+  const canDelegate = perms?.communicationACL.canDelegate ?? false;
+
+  if (canDelegate) {
+    tools.push({
+      name: 'request_agent',
+      description: 'Ask another agent to do something and get the result back. Use this to delegate sub-tasks to specialized agents. The target agent runs synchronously and returns its output.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agentName: { type: 'string', description: 'Which agent to ask (must be on the team roster)' },
+          task: { type: 'string', description: 'What you need them to do — be specific' },
+        },
+        required: ['agentName', 'task'],
+      },
+      async execute(input) {
+        const targetName = input.agentName as string;
+        const task = input.task as string;
+
+        // Verify target agent exists
+        const target = registry.getAgent(targetName);
+        if (!target) return `ERROR: Agent "${targetName}" not found on the team roster.`;
+
+        // Check communication ACL — can this agent talk to the target?
+        if (perms?.communicationACL.agents !== 'all') {
+          const allowed = perms?.communicationACL.agents ?? [];
+          if (Array.isArray(allowed) && !allowed.includes(targetName)) {
+            return `ERROR: You don't have permission to communicate with "${targetName}". Ask HR to update your permissions.`;
+          }
+        }
+
+        events.log('system', callerAgent, 'status', `Requesting ${targetName}`, task.slice(0, 100));
+        console.log(`\n  [${callerAgent}] → requesting ${targetName}: ${task.slice(0, 100)}`);
+
+        try {
+          const result = await executor(targetName, task);
+          events.log('system', callerAgent, 'status', `${targetName} responded`, result.slice(0, 100));
+          console.log(`  [${callerAgent}] ← ${targetName} responded (${result.length} chars)`);
+          return result;
+        } catch (error: any) {
+          return `ERROR: ${targetName} failed — ${error.message}`;
+        }
+      },
+    });
+  }
+
+  return tools;
+}
+
+/** @deprecated Use createTeamTools instead */
+export function createTeamTool(registry: Registry): ToolDef {
+  return createTeamTools(registry, '', async () => '')[0]!;
 }
