@@ -84,10 +84,29 @@ export async function runAgentLoop(
 
   events.log('system', name, 'status', 'Agent loop started', `Model: ${model}, Max turns: ${maxTurns}, Tools: ${tools.length}`);
 
+  // Add the `done` tool — lets the agent explicitly signal completion
+  const doneTool: ToolDef = {
+    name: 'done',
+    description: 'Call this when you have completed your task and have a final answer. This immediately ends your turn. Pass your final summary/answer as the message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: { type: 'string', description: 'Your final answer or summary to return' },
+      },
+      required: ['message'],
+    },
+    async execute(input) { return input.message as string; },
+  };
+
+  const allTools = [doneTool, ...tools];
+
+  // Build tool executor map
+  const toolMap = new Map(allTools.map((t) => [t.name, t]));
+
   const genAI = new GoogleGenerativeAI(apiKey);
 
   // Convert tools to Gemini function declarations
-  const functionDeclarations = tools.map((t) => ({
+  const functionDeclarations = allTools.map((t) => ({
     name: t.name,
     description: t.description,
     parameters: t.inputSchema,
@@ -100,9 +119,6 @@ export async function runAgentLoop(
       ? [{ functionDeclarations } as any]
       : undefined,
   });
-
-  // Build tool executor map
-  const toolMap = new Map(tools.map((t) => [t.name, t]));
 
   // Prepare initial message through Subconscious
   const prepared = await subconscious.prepare({
@@ -189,6 +205,7 @@ export async function runAgentLoop(
 
     // Process response parts
     let hasToolCall = false;
+    let agentDone = false;
     const functionResponses: Array<{ functionResponse: { name: string; response: { result: string } } }> = [];
 
     for (const part of parts) {
@@ -210,6 +227,15 @@ export async function runAgentLoop(
         const toolName = part.functionCall.name;
         const toolInput = (part.functionCall.args ?? {}) as Record<string, unknown>;
         onToolUse?.(toolName, toolInput);
+
+        // Agent explicitly signals completion
+        if (toolName === 'done') {
+          finalOutput = (toolInput.message as string) ?? finalOutput;
+          events.log('agent', name, 'action', 'Done', finalOutput.slice(0, 200));
+          agentDone = true;
+          break;
+        }
+
         events.log('tool', name, 'tool', `${toolName}()`, JSON.stringify(toolInput).slice(0, 200), { tool: toolName, input: toolInput });
 
         const tool = toolMap.get(toolName);
@@ -234,8 +260,8 @@ export async function runAgentLoop(
       }
     }
 
-    // If no tool calls, we're done
-    if (!hasToolCall) break;
+    // Agent explicitly called done() or no tool calls — exit
+    if (agentDone || !hasToolCall) break;
 
     // Send tool results back — Gemini expects functionResponse parts
     const toolResultMsg = await chat.sendMessage(functionResponses as any);
